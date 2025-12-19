@@ -259,6 +259,14 @@ struct Light {
 	Light(const Vec3& d, const Pixel& c) : direction{ d.norm() }, color{ c } {}
 };
 
+struct Camera {
+	Vec3 position;
+	float yaw_degrees; // Left/right
+	float pitch_degrees; // Up/down
+
+	Camera(const Vec3& v, const float y, const float p) : position{ v }, yaw_degrees{ y }, pitch_degrees{ p } {}
+};
+
 struct Sphere {
 	Vec3 center;
 	float radius;
@@ -289,7 +297,7 @@ struct Sphere {
 	}
 };
 
-void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& spheres, const vector<Light>& lights) {
+void render_scene(Image& image, const Camera& camera, const vector<Sphere>& spheres, const vector<Light>& lights) {
 	const size_t width = image.getNumCols();
 	const size_t height = image.getNumRows();
 
@@ -297,23 +305,37 @@ void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& sphere
 
 	// Distance from camera to image plane
 	const float image_plane_z = 0.0f; // z-pos of the image in world space (where the screen is in 3d)
-	const float camera_to_plane = abs(camera.z - image_plane_z);
+	const float camera_to_plane = abs(camera.position.z - image_plane_z);
 
 	// Compute image plane size in world units
 	const float plane_height = 2.0f * camera_to_plane * tanf(degToRad(FOV * 0.5f));
 	const float plane_width = plane_height * aspect;
 
+	// Camera orientation
+	const float yaw = degToRad(camera.yaw_degrees);
+	const float pitch = degToRad(camera.pitch_degrees);
+
+	// Calculate camera basis vectors
+	const Vec3 forward{
+		cosf(pitch) * sinf(yaw),
+		sinf(pitch),
+		cosf(pitch) * cosf(yaw)
+	};
+	Vec3 up{ 0, 1, 0 };
+	const Vec3 right = forward.cross(up).norm();
+	up = right.cross(forward).norm();
+
 	for (size_t row = 0; row < height; ++row) {
 		for (size_t col = 0; col < width; ++col) {
 			// Map pixel to world coordinates on the image plane
-			const float x = ((col + 0.5f) / width - 0.5f) * plane_width;
+			const float x = -((col + 0.5f) / width - 0.5f) * plane_width; // Negate for correct orientation (flip)
 			const float y = ((row + 0.5f) / height - 0.5f) * plane_height;
 
 			// Create 3d vector that represents position of the pixel in 3d coordinates
-			const Vec3 pixelPos{ x, y, image_plane_z };
+			const Vec3 pixelPos = camera.position + (forward * camera_to_plane) + (right * x) + (up * y);
 
 			// Create the ray for ray-tracing (Ray(origin, direction (normalized by constructor)))
-			const Ray ray{ camera, (pixelPos - camera) };
+			Ray ray{ camera.position, (pixelPos - camera.position).norm() };
 
 			// Find closest sphere
 			float closest_dist = INFINITY;
@@ -328,7 +350,7 @@ void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& sphere
 
 			// Closest sphere exists
 			if (closest_sphere != nullptr) {
-				const Vec3 hit_point = camera + ray.direction * closest_dist;
+				const Vec3 hit_point = camera.position + ray.direction * closest_dist;
 				const Vec3 normal = (hit_point - closest_sphere->center).norm();
 
 				// Accumulate the light sources onto the sphere
@@ -371,9 +393,11 @@ int main() {
 	// y: negative is up, positive is down
 	// z: negative is front, positive is back
 
-	Image img{ 200, 200 };
-	// Vec3 camera{ 50, 10, -100 }; // Camera position (want to have it behind the image plane)
-	Vec3 camera{0, 0, -60}; // Camera position (want to have it behind the image plane)
+	Image img{ 200, 200 }; // Image size is >= the display size
+
+	// Camera position (want to have it behind the image plane)
+	Camera camera{ Vec3{0, 0, -60}, 0.0f, 0.0f }; // Straight camera
+	// Camera camera{ Vec3{20, 40, -60}, -20.0f, -25.0f }; // Camera up, right, and back; looking right and down
 
 	vector<Sphere> spheres = {
 		Sphere{Vec3(0, 0, 0), 25, Pixel{ 255, 255, 255 }}, // White sphere
@@ -390,7 +414,8 @@ int main() {
 
 	render_scene(img, camera, spheres, lights);
 
-	Display display{ 40, 40 };
-	// Display display{ 80, 80 };
+	// Display display{ 20, 20 };
+	// Display display{ 40, 40 };
+	Display display{ 80, 80 };
 	display.displayorater(img);
 }
