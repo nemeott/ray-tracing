@@ -31,13 +31,19 @@
 constexpr size_t WIDTH = 30;
 constexpr size_t HEIGHT = 30;
 
-using namespace std;
+constexpr float FOV = 90.0f;
+
+using namespace std; // TODO: remove
+
+constexpr float degToRad(const float degrees) {
+	return degrees * M_PI / 180.0f;
+}
 
 struct Pixel {
 	u_char r, g, b;
 
-	Pixel() : r(0), g(0), b(0) {}
-	Pixel(const u_char r, const u_char g, const u_char b) : r(r), g(g), b(b) {}
+	Pixel() : Pixel{ 0, 0, 0 } {}
+	Pixel(const u_char r, const u_char g, const u_char b) : r{ r }, g{ g }, b{ b } {}
 
 	// Prints a pixel to the terminal
 	void pixelerator() const {
@@ -45,9 +51,10 @@ struct Pixel {
 			<< static_cast<int>(r) << ";"
 			<< static_cast<int>(g) << ";"
 			<< static_cast<int>(b) << "m"
-			<< " "; // Square with rgb background color (2 spaces for a square)
+			// To use rectangular pixels (one space) for higher fidelity, multiply the display width by 2
+			<< " "; // Rectangular pixel (2:1 tall) with rgb background color
 
-		// To use rectangular pixels (one space) for higher fidelity, multiply the display width by 2
+		// << "  "; // Square with rgb background color (2 spaces for a square)
 	}
 };
 
@@ -57,15 +64,12 @@ struct Image {
 	size_t numRows;
 	size_t numCols;
 
-	Image() : Image(WIDTH, HEIGHT) {};
-	Image(const size_t width, const size_t height) {
-		numRows = height;
-		numCols = width;
-
-		for (size_t row = 0; row < numRows; row++) {
-			for (size_t col = 0; col < numCols; col++) {
+	Image() : Image{ WIDTH, HEIGHT } {};
+	Image(const size_t width, const size_t height) : numRows{ height }, numCols{ width } {
+		for (size_t row = 0; row < numRows; ++row) {
+			for (size_t col = 0; col < numCols; ++col) {
 				// Initialize with black pixels
-				flattenedPixels.push_back({ 0, 0, 0 });
+				flattenedPixels.emplace_back(0, 0, 0);
 			}
 		}
 	}
@@ -79,16 +83,16 @@ struct Image {
 	}
 
 	// Return a reference to the pixel we can modify
-	Pixel& pixel_at(const size_t row, const size_t col) {
+	Pixel& pixelAt(const size_t row, const size_t col) {
 		return flattenedPixels[row * getNumCols() + col];
 	}
 
 	// Return a reference to the pixel we can't modify
-	const Pixel& pixel_at(const size_t row, const size_t col) const {
+	const Pixel& pixelAt(const size_t row, const size_t col) const {
 		return flattenedPixels[row * getNumCols() + col];
 	}
 
-	bool is_within_bounds(const size_t row, const size_t col) const {
+	bool isWithinBounds(const size_t row, const size_t col) const {
 		return row < getNumRows() && col < getNumCols();
 	}
 
@@ -99,41 +103,42 @@ struct Image {
 		size_t y_end = y + height;
 		if (y_end >= getNumRows()) x_end = getNumRows() - 1;
 
-		for (size_t row = y; row < y_end; row++) {
-			for (size_t col = x; col < x_end; col++) {
-				pixel_at(row, col) = color;
+		for (size_t row = y; row < y_end; ++row) {
+			for (size_t col = x; col < x_end; ++col) {
+				pixelAt(row, col) = color;
 			}
 		}
 	}
 
 	void addCircle(const size_t x, const size_t y, const size_t radius, const Pixel& color) {
-		for (size_t row = y - radius; row <= y + radius; row++) {
-			for (size_t col = x - radius; col <= x + radius; col++) {
-				if (is_within_bounds(row, col)) {
+		for (size_t row = y - radius; row <= y + radius; ++row) {
+			for (size_t col = x - radius; col <= x + radius; ++col) {
+				if (isWithinBounds(row, col)) {
 					const size_t dx = col - x;
 					const size_t dy = row - y;
 
 					// x^2 + y^2 <= r^2
 					if ((dx * dx) + (dy * dy) <= (radius * radius)) {
-						pixel_at(row, col) = color;
+						pixelAt(row, col) = color;
 					}
 				}
 			}
 		}
 	}
 
-	static Image load_png(const char* filename) {
+	static Image loadPng(const char* filename) {
 		// Get the image data
 		int width, height, channels;
 		unsigned char* data = stbi_load(filename, &width, &height, &channels, 3); // force RGB
+		const size_t sWidth = width, sHeight = height;
 
 		// Create image and populate with the png data
-		Image img(width, height);
-		for (int row = 0; row < height; row++) {
-			for (int col = 0; col < width; col++) {
-				size_t idx = (row * width + col) * 3;
+		Image img{ sWidth, sHeight };
+		for (size_t row = 0; row < sHeight; ++row) {
+			for (size_t col = 0; col < sWidth; ++col) {
+				size_t idx = (row * sWidth + col) * 3;
 				Pixel p{ data[idx], data[idx + 1], data[idx + 2] };
-				img.pixel_at(row, col) = p;
+				img.pixelAt(row, col) = p;
 			}
 		}
 		stbi_image_free(data);
@@ -146,17 +151,18 @@ struct Display {
 	size_t width;
 	size_t height;
 
-	Display() : width(WIDTH * 2), height(HEIGHT) {}
-	Display(const size_t w, const size_t h) : width(w * 2), height(h) {}
+	// Width is multiplied by 2 since we are using 2:1 tall rectangular pixels
+	Display() : Display(WIDTH, HEIGHT) {}
+	Display(const size_t w, const size_t h) : width{ w * 2 }, height{ h } {}
 
+	// Get the average color of a box of pixels
 	Pixel average(const Image& image, const size_t startRow, const size_t endRow, const size_t startCol, const size_t endCol) const {
-		u_int rTotal = 0;
-		u_int gTotal = 0;
-		u_int bTotal = 0;
+		u_int rTotal = 0, gTotal = 0, bTotal = 0;
 
-		for (size_t row = startRow; row < endRow; row++) {
-			for (size_t col = startCol; col < endCol; col++) {
-				const Pixel& pix = image.pixel_at(row, col);
+		// Sum each value up
+		for (size_t row = startRow; row < endRow; ++row) {
+			for (size_t col = startCol; col < endCol; ++col) {
+				const Pixel& pix = image.pixelAt(row, col);
 
 				rTotal += pix.r; // Pixar
 				gTotal += pix.g;
@@ -166,10 +172,11 @@ struct Display {
 
 		const u_int numPixels = (endRow - startRow) * (endCol - startCol);
 
-		return {
-			static_cast<u_char>((rTotal / numPixels)),
-			static_cast<u_char>((gTotal / numPixels)),
-			static_cast<u_char>((bTotal / numPixels))
+		// Divide each value by the total
+		return Pixel{
+			static_cast<u_char>(rTotal / numPixels),
+			static_cast<u_char>(gTotal / numPixels),
+			static_cast<u_char>(bTotal / numPixels)
 		};
 	}
 
@@ -180,8 +187,8 @@ struct Display {
 		//   [H Moves the cursor to the origin
 		cout << "\033[2J\033[H";
 
-		for (size_t row = 0; row < height; row++) {
-			for (size_t col = 0; col < width; col++) {
+		for (size_t row = 0; row < height; ++row) {
+			for (size_t col = 0; col < width; ++col) {
 				const float heightScale = image.getNumRows() / static_cast<float>(height);
 				const float widthScale = image.getNumCols() / static_cast<float>(width);
 
@@ -205,18 +212,18 @@ struct Display {
 
 struct Vec3 {
 	float x, y, z;
-	Vec3() : x(0), y(0), z(0) {}
-	Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
+	Vec3() : Vec3{ 0, 0, 0 } {}
+	Vec3(float x, float y, float z) : x{ x }, y{ y }, z{ z } {}
 
-	// Overload operators
+	// Overload basic operators
 	Vec3 operator+(const Vec3& v) const {
-		return Vec3(x + v.x, y + v.y, z + v.z);
+		return Vec3{ x + v.x, y + v.y, z + v.z };
 	}
 	Vec3 operator-(const Vec3& v) const {
-		return Vec3(x - v.x, y - v.y, z - v.z);
+		return Vec3{ x - v.x, y - v.y, z - v.z };
 	}
-	Vec3 operator*(const float s) const {
-		return Vec3(x * s, y * s, z * s);
+	Vec3 operator*(const float c) const {
+		return Vec3{ x * c, y * c, z * c };
 	}
 
 	// Vector operators
@@ -224,24 +231,32 @@ struct Vec3 {
 		return (x * v.x) + (y * v.y) + (z * v.z);
 	}
 	float length() const {
-		return sqrt((x * x) + (y * y) + (z * z));
+		return sqrtf((x * x) + (y * y) + (z * z));
 	}
 	Vec3 norm() const {
 		const float len = length();
-		return Vec3(x / len, y / len, z / len);
+		return Vec3{ x / len, y / len, z / len };
+	}
+	// Return a vector perpendicular to both (length is the area formed by both vectors)
+	Vec3 cross(const Vec3& v) const {
+		return Vec3{
+			y * v.z - z * v.y,
+			z * v.x - x * v.z,
+			x * v.y - y * v.x
+		};
 	}
 };
 
 struct Ray {
 	Vec3 origin, direction;
-	Ray(const Vec3& o, const Vec3& d) : origin(o), direction(d.norm()) {}
+	Ray(const Vec3& o, const Vec3& d) : origin{ o }, direction{ d.norm() } {}
 };
 
 struct Light {
 	Vec3 direction;
 	Pixel color; // Light color/brightness
 
-	Light(const Vec3& d, const Pixel& c) : direction(d.norm()), color(c) {}
+	Light(const Vec3& d, const Pixel& c) : direction{ d.norm() }, color{ c } {}
 };
 
 struct Sphere {
@@ -249,7 +264,7 @@ struct Sphere {
 	float radius;
 	Pixel color;
 
-	Sphere(const Vec3 c, const float r, const Pixel p) : center(c), radius(r), color(p) {}
+	Sphere(const Vec3 c, const float r, const Pixel p) : center{ c }, radius{ r }, color{ p } {}
 
 	// Check if a ray intersects with the sphere (dist is updated when intersection dist found)
 	bool intersects(const Ray& ray, float& dist) const {
@@ -257,28 +272,27 @@ struct Sphere {
 		// a*dist^2 + b*dist + c = 0
 
 		// Get the vector from the center of the sphere, to the ray's origin
-		Vec3 centerToOrigin = ray.origin - center;
+		const Vec3 centerToOrigin = ray.origin - center;
 
-		// Calculate a, b, c from the quadratic equation
-		float a = ray.direction.dot(ray.direction);
-		float b = 2.0f * centerToOrigin.dot(ray.direction);
-		float c = centerToOrigin.dot(centerToOrigin) - (radius * radius);
+		// Calculate a, b, c using the quadratic equation
+		const float a = ray.direction.dot(ray.direction);
+		const float b = 2.0f * centerToOrigin.dot(ray.direction);
+		const float c = centerToOrigin.dot(centerToOrigin) - (radius * radius);
 
 		// If the discriminant is negative, the ray does not intersect the sphere
-		float discriminant = b * b - 4 * a * c;
+		const float discriminant = (b * b) - (4 * a * c);
 		if (discriminant < 0) return false;
 
 		// The ray is not negative, so we can solve for the intersection distance
-		dist = (-b - sqrt(discriminant)) / (2.0f * a);
+		dist = (-b - sqrtf(discriminant)) / (2.0f * a);
 		return dist > 0;
 	}
 };
 
 void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& spheres, const vector<Light>& lights) {
-	size_t width = image.getNumCols();
-	size_t height = image.getNumRows();
+	const size_t width = image.getNumCols();
+	const size_t height = image.getNumRows();
 
-	const float fov = 90.0f; // FOV in degrees
 	const float aspect = width / static_cast<float>(height);
 
 	// Distance from camera to image plane
@@ -286,20 +300,20 @@ void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& sphere
 	const float camera_to_plane = abs(camera.z - image_plane_z);
 
 	// Compute image plane size in world units
-	float plane_height = 2.0f * camera_to_plane * tanf((fov * 0.5f) * M_PI / 180.0f);
-	float plane_width = plane_height * aspect;
+	const float plane_height = 2.0f * camera_to_plane * tanf(degToRad(FOV * 0.5f));
+	const float plane_width = plane_height * aspect;
 
-	for (size_t row = 0; row < height; row++) {
-		for (size_t col = 0; col < width; col++) {
+	for (size_t row = 0; row < height; ++row) {
+		for (size_t col = 0; col < width; ++col) {
 			// Map pixel to world coordinates on the image plane
-			float x = ((col + 0.5f) / width - 0.5f) * plane_width;
-			float y = ((row + 0.5f) / height - 0.5f) * plane_height;
+			const float x = ((col + 0.5f) / width - 0.5f) * plane_width;
+			const float y = ((row + 0.5f) / height - 0.5f) * plane_height;
 
 			// Create 3d vector that represents position of the pixel in 3d coordinates
-			Vec3 pixelPos(x, y, image_plane_z);
+			const Vec3 pixelPos{ x, y, image_plane_z };
 
-			// Create the ray for ray-tracing (Ray(origin, direction (length 1, aka unit vector)))
-			Ray ray(camera, (pixelPos - camera).norm());
+			// Create the ray for ray-tracing (Ray(origin, direction (normalized by constructor)))
+			const Ray ray{ camera, (pixelPos - camera) };
 
 			// Find closest sphere
 			float closest_dist = INFINITY;
@@ -314,24 +328,23 @@ void render_scene(Image& image, const Vec3& camera, const vector<Sphere>& sphere
 
 			// Closest sphere exists
 			if (closest_sphere != nullptr) {
-				Vec3 hit_point = camera + ray.direction * closest_dist;
-				Vec3 normal = (hit_point - closest_sphere->center).norm();
+				const Vec3 hit_point = camera + ray.direction * closest_dist;
+				const Vec3 normal = (hit_point - closest_sphere->center).norm();
 
 				// Accumulate the light sources onto the sphere
-				float r = 0, g = 0, b = 0;
+				float rTotal = 0, gTotal = 0, bTotal = 0;
 				for (const auto& light : lights) {
-					float brightness = max(0.0f, normal.dot(light.direction)); // Lambertian reflectance
-					r += closest_sphere->color.r * brightness * (light.color.r / 255.0f);
-					g += closest_sphere->color.g * brightness * (light.color.g / 255.0f);
-					b += closest_sphere->color.b * brightness * (light.color.b / 255.0f);
+					const float brightness = max(0.0f, normal.dot(light.direction)); // Lambertian reflectance
+					rTotal += closest_sphere->color.r * brightness * (light.color.r / 255.0f);
+					gTotal += closest_sphere->color.g * brightness * (light.color.g / 255.0f);
+					bTotal += closest_sphere->color.b * brightness * (light.color.b / 255.0f);
 				}
 
-				image.pixel_at(row, col) = Pixel{
-					static_cast<u_char>(min(255.0f, r)),
-					static_cast<u_char>(min(255.0f, g)),
-					static_cast<u_char>(min(255.0f, b))
-				};
-			}
+				Pixel& pix = image.pixelAt(row, col);
+				pix.r = static_cast<u_char>(min(rTotal, 255.0f));
+				pix.g = static_cast<u_char>(min(gTotal, 255.0f));
+				pix.b = static_cast<u_char>(min(bTotal, 255.0f));
+			};
 		}
 	}
 }
@@ -350,7 +363,7 @@ int main() {
 
 	// display.displayorater(dat);
 
-	// Image img = Image::load_png("lions.png");
+	// Image img = Image::loadPng("lions.png");
 	// Display display;
 	// display.displayorater(img);
 
@@ -360,7 +373,7 @@ int main() {
 
 	Image img{ 200, 200 };
 	// Vec3 camera{ 50, 10, -100 }; // Camera position (want to have it behind the image plane)
-	Vec3 camera{ 0, 0, -60 }; // Camera position (want to have it behind the image plane)
+	Vec3 camera{0, 0, -60}; // Camera position (want to have it behind the image plane)
 
 	vector<Sphere> spheres = {
 		Sphere{Vec3(0, 0, 0), 25, Pixel{ 255, 255, 255 }}, // White sphere
@@ -377,7 +390,7 @@ int main() {
 
 	render_scene(img, camera, spheres, lights);
 
-	// Display display{ 40, 40 };
-	Display display{ 80, 80 };
+	Display display{ 40, 40 };
+	// Display display{ 80, 80 };
 	display.displayorater(img);
 }
