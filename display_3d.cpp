@@ -24,6 +24,11 @@
 #include <cmath>
 #include <algorithm>
 
+// Sleep
+#include <chrono>
+#include <thread>
+
+
 // For png input (wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h)
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -71,6 +76,14 @@ struct Image {
 				// Initialize with black pixels
 				flattenedPixels.emplace_back(0, 0, 0);
 			}
+		}
+	}
+
+	void clear() {
+		for (auto& pixel : flattenedPixels) {
+			pixel.r = 0;
+			pixel.g = 0;
+			pixel.b = 0;
 		}
 	}
 
@@ -203,12 +216,15 @@ struct Display {
 			}
 
 			cout << "\n"; // Print new line
-			cout << "\033[0m"; // Reset attributes to default
 		}
+
+		cout << "\033[0m"; // Reset attributes to default
 	}
 };
 
-
+//
+// 3d stuff
+//
 
 struct Vec3 {
 	float x, y, z;
@@ -412,10 +428,22 @@ int main() {
 		Light{Vec3{1, -1, -1}, Pixel{255, 255, 255 }} // Front top right (white)
 	};
 
-	render_scene(img, camera, spheres, lights);
 
-	// Display display{ 20, 20 };
+	Display display{ 20, 20 };
 	// Display display{ 40, 40 };
-	Display display{ 80, 80 };
-	display.displayorater(img);
+	// Display display{ 80, 80 };
+	// render_scene(img, camera, spheres, lights);
+	// display.displayorater(img);
+
+	for (size_t frame = 0; frame < 200; ++frame) {
+		img.clear();
+
+		camera.yaw_degrees = frame * 2.0f; // Turn right
+
+		render_scene(img, camera, spheres, lights);
+		display.displayorater(img);
+
+		// ~33ms for 30 fps
+		std::this_thread::sleep_for(std::chrono::milliseconds(33));
+	}
 }

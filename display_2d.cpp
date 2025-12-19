@@ -194,8 +194,9 @@ struct Display {
 			}
 
 			cout << "\n"; // Print new line
-			cout << "\033[0m"; // Reset attributes to default
 		}
+		
+		cout << "\033[0m"; // Reset attributes to default
 	}
 };
 
