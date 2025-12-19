@@ -1,0 +1,35 @@
+# Compiler and flags
+CXX := g++ # Use g++ as the C++ compiler
+BASE_FLAGS := -std=c++17 -O3
+WARN_FLAGS := -Wall -Wextra -pedantic # VERBOSE=1 to enable
+CXXFLAGS := $(BASE_FLAGS) $(if $(VERBOSE),$(WARN_FLAGS))
+
+# Build directory
+BUILD_DIR := build
+
+# Source and object files
+SRC := $(wildcard *.cpp)
+OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRC))
+
+# Binary name
+BIN := ray_tracer
+
+all: $(BIN)
+
+# Link all objects into the binary
+$(BIN): $(OBJ) | $(BUILD_DIR)
+    $(CXX) $(CXXFLAGS) -o $@ $^
+
+# Compile .cpp -> build/*.o
+$(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
+    $(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Ensure build directory exists
+$(BUILD_DIR):
+    mkdir -p $(BUILD_DIR)
+
+# Clean build artifacts
+clean:
+    rm -rf $(BUILD_DIR) $(BIN)
+
+.PHONY: all clean
