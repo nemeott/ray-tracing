@@ -9,7 +9,7 @@ using namespace std;
 
 // Use to display a prerendered scene
 // Scene can be prerendered by directing the output of the display to a file
-// Ex: ./display_3d > display_3d.out; ./display_file display_3d.out
+// Ex: ./display_3d > display_3d.anim; ./display_file display_3d.anim
 
 // Reads all frames from the file, assuming each frame is separated by "\033[0m"
 vector<string> read_frames(const string& filename) {

@@ -28,11 +28,6 @@
 #include <chrono>
 #include <thread>
 
-
-// For png input (wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h)
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-
 constexpr size_t WIDTH = 30;
 constexpr size_t HEIGHT = 30;
 
@@ -260,7 +255,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Sphere>& 
 	// Distance from camera to image plane
 	const float image_plane_z = 0.0f; // z-pos of the image in world space (where the screen is in 3d)
 	const float camera_to_plane = abs(camera.position.z - image_plane_z);
-	const float epsilon = 1e-4f; // Add a small value to prevent division by 0 (would cause the camera to be close and not where we want)
+	const float epsilon = 1e-6f; // Add a small value to prevent division by 0 (would cause the camera to be close and not where we want)
 	const float safe_camera_to_plane = camera_to_plane + epsilon;
 
 	// Compute image plane size in world units
@@ -328,6 +323,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Sphere>& 
 }
 
 int main() {
+	// Display3D display{ 20, 20 };
 	Display3D display{ 30, 30 };
 	// Display3D display{ 40, 40 };
 	// Display3D display{ 80, 80 };
