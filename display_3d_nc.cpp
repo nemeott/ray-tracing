@@ -2,10 +2,11 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <memory> // For smart pointers
 
 // Sleep
-#include <chrono>
 #include <thread>
+#include <chrono>
 
 // notcurses for terminal rendering and keyboard input (https://github.com/dankamongmen/notcurses)
 #include <notcurses/notcurses.h>
@@ -153,15 +154,27 @@ struct Camera {
 	Camera(const Vec3& v, const float y, const float p) : position{ v }, yaw_degrees{ y }, pitch_degrees{ p } {}
 };
 
-struct Plane {
-	Vec3 point; // Any point on the plane
-	Vec3 normal; // Normal vector
+struct Object {
 	Pixel color;
 
-	Plane(const Vec3& p, const Vec3& n, const Pixel& c) : point{ p }, normal{ n.norm() }, color{ c } {}
+	Object(const Pixel& c) : color{ c } {}
+
+	virtual const Vec3 getNormalAt(const Vec3& hit_point) const = 0;
+	virtual bool intersects(const Ray& ray, float& dist) const = 0;
+};
+
+struct Plane : public Object {
+	Vec3 point; // Any point on the plane
+	Vec3 normal; // Normal vector
+
+	Plane(const Vec3& p, const Vec3& n, const Pixel& c) : Object{ c }, point{ p }, normal{ n.norm() } {}
+
+	const Vec3 getNormalAt(const Vec3&) const override {
+		return normal;
+	}
 
 	// Returns true if ray hits the plane, sets dist to intersection distance
-	bool intersects(const Ray& ray, float& dist) const {
+	bool intersects(const Ray& ray, float& dist) const override {
 		float denominator = normal.dot(ray.direction);
 		if (fabs(denominator) < 1e-6) return false; // Parallel, no hit
 		dist = (point - ray.origin).dot(normal) / denominator;
@@ -169,15 +182,26 @@ struct Plane {
 	}
 };
 
-struct Sphere {
+struct Box : public Object {
+	Vec3 minCorner; // Minimum corner (x_min, y_min, z_min)
+	Vec3 maxCorner; // Maximum corner (x_max, y_max, z_max)
+
+	Box(const Vec3& minC, const Vec3& maxC, const Pixel& c) : Object{ c }, minCorner{ minC }, maxCorner{ maxC } {}
+
+};
+
+struct Sphere : public Object {
 	Vec3 center;
 	float radius;
-	Pixel color;
 
-	Sphere(const Vec3 c, const float r, const Pixel p) : center{ c }, radius{ r }, color{ p } {}
+	Sphere(const Vec3 c, const float r, const Pixel p) : Object{ p }, center{ c }, radius{ r } {}
+
+	const Vec3 getNormalAt(const Vec3& hit_point) const override {
+		return (hit_point - center).norm();
+	}
 
 	// Check if a ray intersects with the sphere (dist is updated when intersection dist found)
-	bool intersects(const Ray& ray, float& dist) const {
+	bool intersects(const Ray& ray, float& dist) const override {
 		// dist is the length of the ray that hits the sphere (multiply by direction for the full ray)
 		// a*dist^2 + b*dist + c = 0
 
@@ -213,7 +237,7 @@ void get_camera_basis(const Camera& camera, Vec3& forward, Vec3& right, Vec3& up
 	up = right.cross(forward).norm();
 }
 
-void render_scene(Display3D& image, const Camera& camera, const vector<Plane>& planes, const vector<Sphere>& spheres, const vector<Light>& lights) {
+void render_scene(Display3D& image, const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights) {
 	const size_t width = image.getNumCols();
 	const size_t height = image.getNumRows();
 
@@ -245,34 +269,22 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Plane>& p
 			// Create ray from camera to pixel
 			const Ray ray{ camera.position, (pixelPos - camera.position).norm() };
 
-			// TODO: Make generic object type
-			// Find closest sphere
+			// Find closest object
 			float closest_dist = INFINITY;
-			const Sphere* closest_sphere = nullptr;
-			for (const auto& sphere : spheres) {
+			const Object* closest_object = nullptr;
+			for (const auto& object : objects) {
 				float dist;
-				if (sphere.intersects(ray, dist) && dist < closest_dist) {
+				if (object->intersects(ray, dist) && dist < closest_dist) {
 					closest_dist = dist;
-					closest_sphere = &sphere;
+					closest_object = object.get();
 				}
 			}
 
-			// Find closest plane
-			float closest_plane_dist = INFINITY;
-			const Plane* closest_plane = nullptr;
-			for (const auto& plane : planes) {
-				float dist;
-				if (plane.intersects(ray, dist) && dist < closest_plane_dist) {
-					closest_plane_dist = dist;
-					closest_plane = &plane;
-				}
-			}
-
-			// Closest sphere exists
-			if (closest_sphere && closest_dist < closest_plane_dist) {
+			// Closest object
+			if (closest_object) {
 				// Calculate the hit point and normal at the intersection
 				const Vec3 hit_point = camera.position + ray.direction * closest_dist;
-				const Vec3 normal = (hit_point - closest_sphere->center).norm();
+				const Vec3 normal = closest_object->getNormalAt(hit_point);
 
 				// View direction (from hit point to camera)
 				const Vec3 viewDir = (camera.position - hit_point).norm();
@@ -289,37 +301,11 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Plane>& p
 					const float specular = powf(specAngle, SPECULAR_SHININESS);
 
 					// Diffuse color
-					rTotal += closest_sphere->color.r * diffuse * (light.color.r / RGB_MAX_FLOAT);
-					gTotal += closest_sphere->color.g * diffuse * (light.color.g / RGB_MAX_FLOAT);
-					bTotal += closest_sphere->color.b * diffuse * (light.color.b / RGB_MAX_FLOAT);
+					rTotal += closest_object->color.r * diffuse * (light.color.r / RGB_MAX_FLOAT);
+					gTotal += closest_object->color.g * diffuse * (light.color.g / RGB_MAX_FLOAT);
+					bTotal += closest_object->color.b * diffuse * (light.color.b / RGB_MAX_FLOAT);
 
 					// Specular highlight (white, or use light color)
-					rTotal += RGB_MAX_FLOAT * specular * (light.color.r / RGB_MAX_FLOAT);
-					gTotal += RGB_MAX_FLOAT * specular * (light.color.g / RGB_MAX_FLOAT);
-					bTotal += RGB_MAX_FLOAT * specular * (light.color.b / RGB_MAX_FLOAT);
-				}
-
-				Pixel& pix = image.pixelAt(row, col);
-				pix.r = static_cast<u_char>(min(rTotal, RGB_MAX_FLOAT));
-				pix.g = static_cast<u_char>(min(gTotal, RGB_MAX_FLOAT));
-				pix.b = static_cast<u_char>(min(bTotal, RGB_MAX_FLOAT));
-			}
-			else if (closest_plane) {
-				const Vec3 hit_point = camera.position + ray.direction * closest_plane_dist;
-				const Vec3 normal = closest_plane->normal;
-				const Vec3 viewDir = (camera.position - hit_point).norm();
-
-				float rTotal = 0, gTotal = 0, bTotal = 0;
-				for (const auto& light : lights) {
-					const float diffuse = max(0.0f, normal.dot(light.direction));
-					const Vec3 halfway = (light.direction + viewDir).norm();
-					const float specAngle = max(0.0f, normal.dot(halfway));
-					const float specular = powf(specAngle, SPECULAR_SHININESS);
-
-					rTotal += closest_plane->color.r * diffuse * (light.color.r / RGB_MAX_FLOAT);
-					gTotal += closest_plane->color.g * diffuse * (light.color.g / RGB_MAX_FLOAT);
-					bTotal += closest_plane->color.b * diffuse * (light.color.b / RGB_MAX_FLOAT);
-
 					rTotal += RGB_MAX_FLOAT * specular * (light.color.r / RGB_MAX_FLOAT);
 					gTotal += RGB_MAX_FLOAT * specular * (light.color.g / RGB_MAX_FLOAT);
 					bTotal += RGB_MAX_FLOAT * specular * (light.color.b / RGB_MAX_FLOAT);
@@ -485,15 +471,14 @@ int main() {
 	// Camera position (want to have it behind the image plane)
 	Camera camera{ Vec3{ 0, 0, -60 }, 0.0f, 0.0f }; // Straight camera
 
-	vector<Plane> planes{
-		Plane{ Vec3{ 0, 25, 0 }, Vec3{ 0, 1, 0 }, Pixel{ 230, 230, 230 } } // Green ground plane
-	};
+	// Combine all objects into a vector of Object pointers
+	vector<std::unique_ptr<Object>> objects;
+	objects.emplace_back(std::make_unique<Plane>(Vec3{ 0, 25, 0 }, Vec3{ 0, 1, 0 }, Pixel{ 230, 230, 230 })); // Light gray ground plane
 
-	vector<Sphere> spheres = {
-		Sphere{Vec3{ 0, 0, 0 }, 25, Pixel{ 255, 255, 255 }}, // White sphere
-		Sphere{Vec3{ 30, 20, -15 }, 10, Pixel{ 255, 255, 140 }} // Light yellow sphere front, up, and to the right of the first
-	};
+	objects.emplace_back(std::make_unique<Sphere>(Vec3{ 0, 0, 0 }, 25, Pixel{ 255, 255, 255 })); // White sphere
+	objects.emplace_back(std::make_unique<Sphere>(Vec3{ 30, 20, -15 }, 10, Pixel{ 255, 255, 140 })); // Light yellow sphere front, up, right of the first
 
+	// Create light sources (directional lights for now)
 	vector<Light> lights = {
 		Light{Vec3{5, -10, 1}, Pixel{182, 34, 228}}, // Back top right (magenta light)
 		Light{Vec3{-10, 3, -1}, Pixel{24, 236, 238 }}, // Front bottom left (cyan light)
@@ -502,8 +487,9 @@ int main() {
 		// Light{Vec3{1, -1, -1}, Pixel{ 255, 255, 255 }}, // Front top right (white)
 	};
 
+	// Input loop and rendering
 	bool running = true;
-	
+
 	KeyState keys;
 	int last_mouse_x = -1, last_mouse_y = -1;
 	while (running) {
@@ -516,23 +502,23 @@ int main() {
 			keys.set(input.id); // Set key as pressed
 
 			// Mouse look
-            if (nckey_mouse_p(input.id) && (input.x != last_mouse_x || input.y != last_mouse_y)) {
-                if (last_mouse_x != -1 && last_mouse_y != -1) {
-                    int dx = input.x - last_mouse_x;
-                    int dy = input.y - last_mouse_y;
+			if (nckey_mouse_p(input.id) && (input.x != last_mouse_x || input.y != last_mouse_y)) {
+				if (last_mouse_x != -1 && last_mouse_y != -1) {
+					int dx = input.x - last_mouse_x;
+					int dy = input.y - last_mouse_y;
 
-                    camera.yaw_degrees += dx * MOUSE_SENSITIVITY;
-                    camera.pitch_degrees += dy * MOUSE_SENSITIVITY;
+					camera.yaw_degrees += dx * MOUSE_SENSITIVITY;
+					camera.pitch_degrees += dy * MOUSE_SENSITIVITY;
 
 					// Clamp pitch and wrap yaw
-                    camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f);
-                    if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
-                    else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
-                }
+					camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f);
+					if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
+					else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
+				}
 
-                last_mouse_x = input.x;
-                last_mouse_y = input.y;
-            }
+				last_mouse_x = input.x;
+				last_mouse_y = input.y;
+			}
 		}
 
 		Vec3 forward, right, up;
@@ -575,11 +561,15 @@ int main() {
 			else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
 		}
 
-		spheres[0].center.y -= 0.1f; // Move the big sphere up slowly
-		spheres[0].center.x -= 0.1f; // Move the big sphere up slowly
+		// Example: Move the first sphere
+		auto* sphere = dynamic_cast<Sphere*>(objects[1].get());
+		if (sphere) {
+			sphere->center.y -= 0.1f;
+			sphere->center.x -= 0.1f;
+		}
 
 		display.clear();
-		render_scene(display, camera, planes, spheres, lights);
+		render_scene(display, camera, objects, lights);
 		display.displayorater();
 
 		// Optional small sleep to avoid max CPU usage
