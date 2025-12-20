@@ -39,9 +39,8 @@ struct Display3D {
 	size_t height;
 	struct ncplane* plane;
 
-	// Width is multiplied by 2 since one terminal block is ~2:1 tall
-	// Height is multiplied by 2 since we are using half-block characters
-	Display3D(const size_t w, const size_t h, ncplane* p) : width{ w * 2 }, height{ h * 2 }, plane{ p } {
+	// Width is multiplied by 2 since we are using 2:1 tall rectangular pixels
+	Display3D(const size_t w, const size_t h, ncplane* p) : width{ w * 2 }, height{ h }, plane{ p } {
 		// Initialize with black pixels
 		flattenedPixels.resize(width * height, Pixel{ 0, 0, 0 });
 	}
@@ -74,17 +73,15 @@ struct Display3D {
 	}
 
 	void displayorater() const {
-		for (size_t row = 0; row + 1 < height; row += 2) {
+		for (size_t row = 0; row < height; ++row) {
 			for (size_t col = 0; col < width; ++col) {
-				const Pixel& top = pixelAt(row, col);
-				const Pixel& bottom = pixelAt(row + 1, col);
+				const Pixel& px = pixelAt(row, col);
 
-                // Set foreground to top pixel, background to bottom pixel
-                ncplane_set_fg_rgb8(plane, top.r, top.g, top.b);
-                ncplane_set_bg_rgb8(plane, bottom.r, bottom.g, bottom.b);
+				// Set foreground and background explicitly using RGB8
+				ncplane_set_bg_rgb8(plane, px.r, px.g, px.b);
 
-                // Draw upper half block
-                ncplane_putstr_yx(plane, row / 2, col, "▀");
+				// Draw space to represent pixel
+				ncplane_putstr_yx(plane, row, col, " ");
 			}
 		}
 		notcurses_render(ncplane_notcurses(plane));
@@ -221,9 +218,8 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Plane>& p
 	const size_t height = image.getNumRows();
 
 	// Calculate aspect ratio for proper scaling
-	// Width is multiplied by 2 since one terminal block is ~2:1 tall
-	// Divide height by 2 since we are using half-block characters
-	const float aspect = (width / 2.0f) / (height / 2.0f);
+	// Divide width by 2 since we are using 2:1 tall rectangular pixels
+	const float aspect = (width / 2.0f) / static_cast<float>(height);
 
 	// Distance from camera to image plane
 	constexpr float camera_to_plane = 1.0f;
@@ -478,8 +474,13 @@ int main() {
 	notcurses_mice_enable(nc, NCMICE_ALL_EVENTS);
 
 	ncplane* stdplane = notcurses_stdplane(nc);
+
+	// Auto-detect terminal size (zoom terminal out really far for lots of pixels)
+	u_int rows, cols;
+	ncplane_dim_yx(stdplane, &rows, &cols);
+	Display3D display{ cols / 2, rows, stdplane };
+
 	// Display3D display{ 80, 45, stdplane };
-	Display3D display{ 40, 40, stdplane };
 
 	// Camera position (want to have it behind the image plane)
 	Camera camera{ Vec3{ 0, 0, -60 }, 0.0f, 0.0f }; // Straight camera
@@ -573,6 +574,9 @@ int main() {
 			if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
 			else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
 		}
+
+		spheres[0].center.y -= 0.1f; // Move the big sphere up slowly
+		spheres[0].center.x -= 0.1f; // Move the big sphere up slowly
 
 		display.clear();
 		render_scene(display, camera, planes, spheres, lights);
