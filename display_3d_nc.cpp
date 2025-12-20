@@ -1,5 +1,3 @@
-// TODO: Diffuse lighting and specular highlights
-
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -14,8 +12,11 @@
 
 constexpr float RGB_MAX_FLOAT = 255.0f;
 
-constexpr float FOV = 90.0f; // The zoom
 constexpr float SPECULAR_SHININESS = 32.0f; // Specular shininess factor (higher is smaller/brighter highlights)
+
+constexpr float FOV = 90.0f; // The zoom
+constexpr float MOUSE_SENSITIVITY = 0.7f;
+
 
 using namespace std; // TODO: remove
 
@@ -23,6 +24,7 @@ constexpr float degToRad(const float degrees) {
 	return degrees * M_PI / 180.0f;
 }
 
+// Struct that holds RGB pixel data
 struct Pixel {
 	u_char r, g, b;
 
@@ -32,13 +34,14 @@ struct Pixel {
 
 // Struct that holds image data and renders the image
 struct Display3D {
-	vector<Pixel> flattenedPixels;
+	vector<Pixel> flattenedPixels; // 2D array flattened into 1D array of pixels
 	size_t width;
 	size_t height;
 	struct ncplane* plane;
 
-	// Width is multiplied by 2 since we are using 2:1 tall rectangular pixels
-	Display3D(const size_t w, const size_t h, ncplane* p) : width{ w * 2 }, height{ h }, plane{ p } {
+	// Width is multiplied by 2 since one terminal block is ~2:1 tall
+	// Height is multiplied by 2 since we are using half-block characters
+	Display3D(const size_t w, const size_t h, ncplane* p) : width{ w * 2 }, height{ h * 2 }, plane{ p } {
 		// Initialize with black pixels
 		flattenedPixels.resize(width * height, Pixel{ 0, 0, 0 });
 	}
@@ -71,15 +74,17 @@ struct Display3D {
 	}
 
 	void displayorater() const {
-		for (size_t row = 0; row < height; ++row) {
+		for (size_t row = 0; row + 1 < height; row += 2) {
 			for (size_t col = 0; col < width; ++col) {
-				const Pixel& px = pixelAt(row, col);
+				const Pixel& top = pixelAt(row, col);
+				const Pixel& bottom = pixelAt(row + 1, col);
 
-				// Set foreground and background explicitly using RGB8
-				ncplane_set_bg_rgb8(plane, px.r, px.g, px.b);
+                // Set foreground to top pixel, background to bottom pixel
+                ncplane_set_fg_rgb8(plane, top.r, top.g, top.b);
+                ncplane_set_bg_rgb8(plane, bottom.r, bottom.g, bottom.b);
 
-				// Draw space to represent pixel
-				ncplane_putstr_yx(plane, row, col, " ");
+                // Draw upper half block
+                ncplane_putstr_yx(plane, row / 2, col, "▀");
 			}
 		}
 		notcurses_render(ncplane_notcurses(plane));
@@ -216,8 +221,9 @@ void render_scene(Display3D& image, const Camera& camera, const vector<Plane>& p
 	const size_t height = image.getNumRows();
 
 	// Calculate aspect ratio for proper scaling
-	// Divide width by 2 since we are using 2:1 tall rectangular pixels
-	const float aspect = (width / 2.0f) / static_cast<float>(height);
+	// Width is multiplied by 2 since one terminal block is ~2:1 tall
+	// Divide height by 2 since we are using half-block characters
+	const float aspect = (width / 2.0f) / (height / 2.0f);
 
 	// Distance from camera to image plane
 	constexpr float camera_to_plane = 1.0f;
@@ -472,7 +478,8 @@ int main() {
 	notcurses_mice_enable(nc, NCMICE_ALL_EVENTS);
 
 	ncplane* stdplane = notcurses_stdplane(nc);
-	Display3D display{ 80, 45, stdplane };
+	// Display3D display{ 80, 45, stdplane };
+	Display3D display{ 40, 40, stdplane };
 
 	// Camera position (want to have it behind the image plane)
 	Camera camera{ Vec3{ 0, 0, -60 }, 0.0f, 0.0f }; // Straight camera
@@ -513,9 +520,8 @@ int main() {
                     int dx = input.x - last_mouse_x;
                     int dy = input.y - last_mouse_y;
 
-                    constexpr float mouse_sensitivity = 0.7f; // Adjust as needed
-                    camera.yaw_degrees += dx * mouse_sensitivity;
-                    camera.pitch_degrees -= dy * mouse_sensitivity;
+                    camera.yaw_degrees += dx * MOUSE_SENSITIVITY;
+                    camera.pitch_degrees += dy * MOUSE_SENSITIVITY;
 
 					// Clamp pitch and wrap yaw
                     camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f);
