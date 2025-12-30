@@ -354,7 +354,8 @@ int main() {
 		// camera.yaw_degrees = frame * 2.0f; // Turn right
 
 		const float orbit_radius = 60.0f;
-		const float orbit_speed = 2.0f * M_PI / 200.0f;
+		//const float orbit_speed = 2.0f * M_PI / 200.0f;
+		const float orbit_speed = degToRad(2.0);
 		const float angle = frame * orbit_speed;
 	
 		const Vec3 center = spheres[0].center;

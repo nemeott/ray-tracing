@@ -25,6 +25,10 @@ constexpr float degToRad(const float degrees) {
 	return degrees * M_PI / 180.0f;
 }
 
+constexpr float radToDeg(const float radians) {
+	return radians * 180.0f / M_PI;
+}
+
 // Struct that holds RGB pixel data
 struct Pixel {
 	u_char r, g, b;
@@ -124,6 +128,10 @@ struct Vec3 {
 		const float len = length();
 		return Vec3{ x / len, y / len, z / len };
 	}
+	Vec3 norm(const float len) const {
+		return Vec3{ x / len, y / len, z / len };
+	}
+	
 	// Return a vector perpendicular to both (length is the area formed by both vectors)
 	Vec3 cross(const Vec3& v) const {
 		return Vec3{
@@ -139,6 +147,10 @@ struct Ray {
 	Ray(const Vec3& o, const Vec3& d) : origin{ o }, direction{ d.norm() } {}
 };
 
+//
+// Lights, camera, action
+//
+
 struct Light {
 	Vec3 direction;
 	Pixel color; // Light color/brightness
@@ -148,26 +160,71 @@ struct Light {
 
 struct Camera {
 	Vec3 position;
-	float yaw_degrees; // Left/right
-	float pitch_degrees; // Up/down
+	float yawDegrees; // Left/right
+	float pitchDegrees; // Up/down
 
-	Camera(const Vec3& v, const float y, const float p) : position{ v }, yaw_degrees{ y }, pitch_degrees{ p } {}
+	Camera(const Vec3& v, const float y, const float p) : position{ v }, yawDegrees{ y }, pitchDegrees{ p } {}
+	
+	void fix() {
+		// Clamp pitch and wrap yaw
+		pitchDegrees = clamp(pitchDegrees, -89.9999f, 89.9999f);
+		if (yawDegrees < 0.0f) yawDegrees += 360.0f;
+		else if (yawDegrees >= 360.0f) yawDegrees -= 360.0f;
+	}
+	
+	void get_basis(Vec3& forward, Vec3& right, Vec3& up) const {
+	  const float yaw = degToRad(yawDegrees);
+	  const float pitch = degToRad(pitchDegrees);
+
+	  forward = Vec3{
+		  cosf(pitch) * sinf(yaw),
+		  sinf(pitch),
+		  cosf(pitch) * cosf(yaw)
+	  };
+	  up = Vec3{ 0, 1, 0 };
+	  right = forward.cross(up).norm();
+	  up = right.cross(forward).norm();
+  }
+	
+  void orbit(const size_t frame, const Vec3& focal, const float orbitRadius, const Vec3& direction, const float degreesPerFrame) {
+		// direction: Vec3 that indicates the rotation direction using -1, 0, or 1
+		
+		// Move the camera acording to the direction and speed
+		const float angle = frame * degToRad(degreesPerFrame);
+		position.x = focal.x + (direction.x * orbitRadius * sinf(angle));
+		position.y = focal.y + (direction.y * orbitRadius * sinf(angle));
+		position.z = focal.z + (direction.z * orbitRadius * cosf(angle));
+		
+		// Look at the focal point
+		const Vec3 toCenter = focal - position;
+		
+		yawDegrees = radToDeg(atan2f(toCenter.x, toCenter.z));
+		const float horizontalDistance = sqrtf(toCenter.x * toCenter.x + toCenter.z * toCenter.z); // TODO: Replace with pythag
+		pitchDegrees = radToDeg(atan2f(toCenter.y, horizontalDistance));
+		fix();
+  }
 };
 
+//
+// Objects
+//
+
 struct Object {
+	Vec3 center;
 	Pixel color;
 
-	Object(const Pixel& c) : color{ c } {}
+	virtual ~Object() = default; // Prevent children from not being destroyed properly
+	Object(const Vec3& c, const Pixel& p) : center{ c }, color{ p } {}
 
 	virtual const Vec3 getNormalAt(const Vec3& hit_point) const = 0;
 	virtual bool intersects(const Ray& ray, float& dist) const = 0;
 };
 
 struct Plane : public Object {
-	Vec3 point; // Any point on the plane
+	// Vec3 center: Any point on the plane
 	Vec3 normal; // Normal vector
 
-	Plane(const Vec3& p, const Vec3& n, const Pixel& c) : Object{ c }, point{ p }, normal{ n.norm() } {}
+	Plane(const Vec3& c, const Vec3& n, const Pixel& p) : Object{ c, p }, normal{ n.norm() } {}
 
 	const Vec3 getNormalAt(const Vec3&) const override {
 		return normal;
@@ -177,24 +234,98 @@ struct Plane : public Object {
 	bool intersects(const Ray& ray, float& dist) const override {
 		float denominator = normal.dot(ray.direction);
 		if (fabs(denominator) < 1e-6) return false; // Parallel, no hit
-		dist = (point - ray.origin).dot(normal) / denominator;
+		dist = (center - ray.origin).dot(normal) / denominator;
 		return dist > 0;
 	}
 };
 
 struct Box : public Object {
-	Vec3 minCorner; // Minimum corner (x_min, y_min, z_min)
-	Vec3 maxCorner; // Maximum corner (x_max, y_max, z_max)
+	// Vec3 center: The center of the box
+	Vec3 u, v, w; // Orthonormal vectors
+	float hu, hv, hw; // Half-lengths of each vector
 
-	Box(const Vec3& minC, const Vec3& maxC, const Pixel& c) : Object{ c }, minCorner{ minC }, maxCorner{ maxC } {}
+	Box(const Vec3& c, const Vec3& U, const Vec3& V, const Vec3& W, const Pixel& p) : Object{ c, p } {
+		hu = U.length();
+		hv = V.length();
+		hw = W.length();
+		
+		// Avoid redundant computations by passing in the length to calculate normal
+		u = U.norm(hu);
+		v = V.norm(hv);
+		w = W.norm(hw);
+		
+		hu /= 2.0f;
+		hv /= 2.0f;
+		hw /= 2.0f;
+	}
+	
+	const Vec3 getNormalAt(const Vec3& hit_point) const override {
+		const Vec3 direction = hit_point - center;
+		
+		// Projections onto each axis
+		const float pU = direction.dot(u);
+		const float pV = direction.dot(v);
+		const float pW = direction.dot(w);
+		//const float pU = direction.dot(u*hu);
+		//const float pV = direction.dot(v*hv);
+		//const float pW = direction.dot(w*hw);
+		
+		const float a = abs(pU / hu);
+		const float b = abs(pV / hv);
+		const float c = abs(pW / hw);
+		
+		//return Vec3{pU, pV, pW}.norm();
+		return Vec3{pU*hu, pV*hv, pW*hw}.norm(); // Diag gradient
+    return Vec3{pU*a, pV*b, pW*c}.norm(); // Curved gradient
+		
+    /*
+		if (a >= b && a >= c )
+		  return pU > 0 ? direction.cross(u*a).norm() : direction.cross(-u*a).norm();
+		else if (b >= c)
+		  return pV > 0 ? direction.cross(v*b).norm() : direction.cross(-v*b).norm(); 
 
+		return pW > 0 ? direction.cross(w*c).norm() : direction.cross(-v*c).norm();
+		*/
+	}
+	
+	void calculateMinMax(const float h, const float o, const float d, float& minDist, float& maxDist) const {
+		minDist = (-h - o) / d;
+		maxDist = (h - o) / d;
+		
+		if (maxDist < minDist) swap(minDist, maxDist);
+	}
+
+  // Check if a ray intersects the box
+	bool intersects(const Ray& ray, float& dist) const override {
+		// Transform ray into local space
+		const Vec3 O = ray.origin - center;
+		
+		float minX, minY, minZ, maxX, maxY, maxZ;
+		calculateMinMax(hu, O.dot(u), ray.direction.dot(u), minX, maxX);
+		calculateMinMax(hv, O.dot(v), ray.direction.dot(v), minY, maxY);
+		calculateMinMax(hw, O.dot(w), ray.direction.dot(w), minZ, maxZ);
+		
+		// Slab intersection
+		const float entryDist = max(max(minX, minY), minZ);
+		const float exitDist = min(min(maxX, maxY), maxZ);
+		
+		// Calculate actual distance
+		
+		// Intersection conditions
+		if (entryDist <= exitDist && exitDist > 0) {
+			dist = entryDist >= 0 ? entryDist : exitDist;
+			return true;
+		}
+		
+		return false;
+	}
 };
 
 struct Sphere : public Object {
-	Vec3 center;
+	// Vec3 center: The center of the sphere
 	float radius;
 
-	Sphere(const Vec3 c, const float r, const Pixel p) : Object{ p }, center{ c }, radius{ r } {}
+	Sphere(const Vec3 c, const float r, const Pixel p) : Object{ c, p }, radius{ r } {}
 
 	const Vec3 getNormalAt(const Vec3& hit_point) const override {
 		return (hit_point - center).norm();
@@ -223,20 +354,6 @@ struct Sphere : public Object {
 	}
 };
 
-void get_camera_basis(const Camera& camera, Vec3& forward, Vec3& right, Vec3& up) {
-	const float yaw = degToRad(camera.yaw_degrees);
-	const float pitch = degToRad(camera.pitch_degrees);
-
-	forward = Vec3{
-		cosf(pitch) * sinf(yaw),
-		sinf(pitch),
-		cosf(pitch) * cosf(yaw)
-	};
-	up = Vec3{ 0, 1, 0 };
-	right = forward.cross(up).norm();
-	up = right.cross(forward).norm();
-}
-
 void render_scene(Display3D& image, const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights) {
 	const size_t width = image.getNumCols();
 	const size_t height = image.getNumRows();
@@ -253,8 +370,8 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 	const float plane_width = plane_height * aspect;
 
 	// Get camera basis vectors
-	Vec3 forward, right, up;
-	get_camera_basis(camera, forward, right, up);
+	Vec3 forward, right, up; // TODO: Return pair and unpack for const
+	camera.get_basis(forward, right, up);
 
 	// Cast rays for each pixel in the image
 	for (size_t row = 0; row < height; ++row) {
@@ -297,7 +414,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 
 					// Specular shading (Blinn-Phong)
 					const Vec3 halfway = (light.direction + viewDir).norm();
-					const float specAngle = max(0.0f, normal.dot(halfway));
+					const float specAngle = max(0.0f, normal.dot(halfway)); // FIX: Specular highlight for box 
 					const float specular = powf(specAngle, SPECULAR_SHININESS);
 
 					// Diffuse color
@@ -306,9 +423,9 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 					bTotal += closest_object->color.b * diffuse * (light.color.b / RGB_MAX_FLOAT);
 
 					// Specular highlight (white, or use light color)
-					rTotal += RGB_MAX_FLOAT * specular * (light.color.r / RGB_MAX_FLOAT);
-					gTotal += RGB_MAX_FLOAT * specular * (light.color.g / RGB_MAX_FLOAT);
-					bTotal += RGB_MAX_FLOAT * specular * (light.color.b / RGB_MAX_FLOAT);
+					rTotal += specular * light.color.r;
+					gTotal += specular * light.color.g;
+					bTotal += specular * light.color.b;
 				}
 
 				Pixel& pix = image.pixelAt(row, col);
@@ -473,10 +590,13 @@ int main() {
 
 	// Combine all objects into a vector of Object pointers
 	vector<std::unique_ptr<Object>> objects;
+	
 	objects.emplace_back(std::make_unique<Plane>(Vec3{ 0, 25, 0 }, Vec3{ 0, 1, 0 }, Pixel{ 230, 230, 230 })); // Light gray ground plane
 
 	objects.emplace_back(std::make_unique<Sphere>(Vec3{ 0, 0, 0 }, 25, Pixel{ 255, 255, 255 })); // White sphere
 	objects.emplace_back(std::make_unique<Sphere>(Vec3{ 30, 20, -15 }, 10, Pixel{ 255, 255, 140 })); // Light yellow sphere front, up, right of the first
+
+  objects.emplace_back(std::make_unique<Box>(Vec3{ 0, 10, 0 }, Vec3{ 20, 0, 0 }, Vec3{ 0, 40, 0 }, Vec3{ 0, 0, 30 }, Pixel{ 255, 255, 255 }));
 
 	// Create light sources (directional lights for now)
 	vector<Light> lights = {
@@ -484,11 +604,12 @@ int main() {
 		Light{Vec3{-10, 3, -1}, Pixel{24, 236, 238 }}, // Front bottom left (cyan light)
 		Light{Vec3{1, 4, -1}, Pixel{100, 100, 100 }}, // Front bottom right (dim white)
 
-		// Light{Vec3{1, -1, -1}, Pixel{ 255, 255, 255 }}, // Front top right (white)
+		//Light{Vec3{1, -1, -1}, Pixel{ 255, 255, 255 }}, // Front top right (white)
 	};
 
 	// Input loop and rendering
 	bool running = true;
+	size_t frame = 0;
 
 	KeyState keys;
 	int last_mouse_x = -1, last_mouse_y = -1;
@@ -507,13 +628,13 @@ int main() {
 					int dx = input.x - last_mouse_x;
 					int dy = input.y - last_mouse_y;
 
-					camera.yaw_degrees += dx * MOUSE_SENSITIVITY;
-					camera.pitch_degrees += dy * MOUSE_SENSITIVITY;
+					camera.yawDegrees += dx * MOUSE_SENSITIVITY;
+					camera.pitchDegrees += dy * MOUSE_SENSITIVITY;
 
 					// Clamp pitch and wrap yaw
-					camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f);
-					if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
-					else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
+					camera.pitchDegrees = std::clamp(camera.pitchDegrees, -89.0f, 89.0f);
+					if (camera.yawDegrees < 0.0f) camera.yawDegrees += 360.0f;
+					else if (camera.yawDegrees >= 360.0f) camera.yawDegrees -= 360.0f;
 				}
 
 				last_mouse_x = input.x;
@@ -522,7 +643,7 @@ int main() {
 		}
 
 		Vec3 forward, right, up;
-		get_camera_basis(camera, forward, right, up);
+		camera.get_basis(forward, right, up);
 		right = -right; // Invert right vector to match typical camera controls
 		up = -up; // Invert up vector to match typical camera controls
 
@@ -543,37 +664,43 @@ int main() {
 		if (keys.x()) camera.position = camera.position - up * move_step;
 
 		if (keys.up()) {
-			camera.pitch_degrees -= rotate_step;
-			camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f); // Prevent turning camera upside down
+			camera.pitchDegrees -= rotate_step;
+			camera.pitchDegrees = std::clamp(camera.pitchDegrees, -89.0f, 89.0f); // Prevent turning camera upside down
 		}
 		if (keys.down()) {
-			camera.pitch_degrees += rotate_step;
-			camera.pitch_degrees = std::clamp(camera.pitch_degrees, -89.0f, 89.0f);
+			camera.pitchDegrees += rotate_step;
+			camera.pitchDegrees = std::clamp(camera.pitchDegrees, -89.0f, 89.0f);
 		}
 		if (keys.left()) {
-			camera.yaw_degrees -= rotate_step;
-			if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
-			else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
+			camera.yawDegrees -= rotate_step;
+			if (camera.yawDegrees < 0.0f) camera.yawDegrees += 360.0f;
+			else if (camera.yawDegrees >= 360.0f) camera.yawDegrees -= 360.0f;
 		}
 		if (keys.right()) {
-			camera.yaw_degrees += rotate_step;
-			if (camera.yaw_degrees < 0.0f) camera.yaw_degrees += 360.0f;
-			else if (camera.yaw_degrees >= 360.0f) camera.yaw_degrees -= 360.0f;
+			camera.yawDegrees += rotate_step;
+			if (camera.yawDegrees < 0.0f) camera.yawDegrees += 360.0f;
+			else if (camera.yawDegrees >= 360.0f) camera.yawDegrees -= 360.0f;
 		}
 
+    
 		// Example: Move the first sphere
 		auto* sphere = dynamic_cast<Sphere*>(objects[1].get());
 		if (sphere) {
 			sphere->center.y -= 0.1f;
 			sphere->center.x -= 0.1f;
 		}
+		
+		
+		camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
 
 		display.clear();
 		render_scene(display, camera, objects, lights);
 		display.displayorater();
 
 		// Optional small sleep to avoid max CPU usage
-		std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 100 fps
+		++frame;
+		//std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 100 fps
+		std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 fps
 	}
 
 	notcurses_stop(nc);
