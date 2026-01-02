@@ -39,6 +39,11 @@ struct Pixel {
 	Pixel(const u_char r, const u_char g, const u_char b) : r{ r }, g{ g }, b{ b } {}
 };
 
+// Forward declarations for Display3D render function
+struct Camera;
+struct Object;
+struct Light;
+
 // Struct that holds image data and renders the image
 struct Display3D {
 	vector<Pixel> flattenedPixels; // 2D array flattened into 1D array of pixels
@@ -64,6 +69,12 @@ struct Display3D {
 		return width;
 	}
 
+	void resize(const size_t w, const size_t h) {
+		width = w * 2;
+		height = h;
+		flattenedPixels.assign(width * height, Pixel{ 0, 0, 0 });
+	}
+
 	// Return a reference to the pixel we can modify
 	Pixel& pixelAt(const size_t row, const size_t col) {
 		return flattenedPixels[row * width + col];
@@ -78,20 +89,19 @@ struct Display3D {
 		return row < height && col < width;
 	}
 
-	void displayorater() const {
+	void draw_image_to_plane() const {
 		for (size_t row = 0; row < height; ++row) {
 			for (size_t col = 0; col < width; ++col) {
 				const Pixel& px = pixelAt(row, col);
 
-				// Set foreground and background explicitly using RGB8
+				// Set background and draw space to represent pixel
 				ncplane_set_bg_rgb8(plane, px.r, px.g, px.b);
-
-				// Draw space to represent pixel
 				ncplane_putstr_yx(plane, row, col, " "); // Using 2:1 tall rectangular pixels (space character)
 			}
 		}
-		notcurses_render(ncplane_notcurses(plane));
 	}
+
+	void render_scene_to_image(const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights);
 };
 
 //
@@ -340,10 +350,9 @@ struct Sphere : public Object {
 	}
 };
 
-void render_scene(Display3D& image, const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights) {
-	const size_t width = image.getNumCols();
-	const size_t height = image.getNumRows();
 
+// Render the 3D scene to the image
+void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights) {
 	// Calculate aspect ratio for proper scaling
 	// Divide width by 2 since we are using 2:1 tall rectangular pixels
 	const float aspect = (width / 2.0f) / static_cast<float>(height);
@@ -356,7 +365,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 	const float plane_width = plane_height * aspect;
 
 	// Get camera basis vectors
-	Vec3 forward, right, up; // TODO: Return pair and unpack for const
+	Vec3 forward, right, up;
 	camera.get_basis(forward, right, up);
 
 	// Cast rays for each pixel in the image
@@ -416,7 +425,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 					bTotal += specular * light.color.b;
 				}
 
-				Pixel& pix = image.pixelAt(row, col);
+				Pixel& pix = pixelAt(row, col);
 				pix.r = static_cast<u_char>(min(rTotal, RGB_MAX_FLOAT));
 				pix.g = static_cast<u_char>(min(gTotal, RGB_MAX_FLOAT));
 				pix.b = static_cast<u_char>(min(bTotal, RGB_MAX_FLOAT));
@@ -424,6 +433,7 @@ void render_scene(Display3D& image, const Camera& camera, const vector<unique_pt
 		}
 	}
 }
+
 
 // void draw_line_3d(Display3D& image, const Camera& camera, const Vec3& p0, const Vec3& p1, const Pixel& color) {
 // 	Vec3 forward, right, up;
@@ -553,23 +563,29 @@ struct KeyState {
 };
 
 int main() {
+	//
+	// Terminal setup and notcurses initialization
+	//
+
 	std::ios_base::sync_with_stdio(false); // Disable IO synchronization for performance
 	setenv("COLORTERM", "truecolor", 1); // Enable perfect rgb colors in the terminal
 
 	// Initialize notcurses
 	struct notcurses_options opts {};
 	notcurses* nc = notcurses_init(&opts, nullptr);
-	if (!nc) return 1;
+	ncplane* stdplane = notcurses_stdplane(nc);
 
 	// Enable mouse input
 	notcurses_mice_enable(nc, NCMICE_ALL_EVENTS);
 
-	ncplane* stdplane = notcurses_stdplane(nc);
-
 	// Auto-detect terminal size (zoom terminal out really far for lots of pixels)
 	u_int rows, cols;
-	ncplane_dim_yx(stdplane, &rows, &cols);
+	notcurses_stddim_yx(nc, &rows, &cols);
 	Display3D display{ cols / 2, rows, stdplane };
+
+	//
+	// Camera and object creation
+	//
 
 	// Camera position (want to have it behind the image plane)
 	Camera camera{ Vec3{ 0, 0, -60 }, 0.0f, 0.0f }; // Straight camera
@@ -593,12 +609,17 @@ int main() {
 		//Light{Vec3{1, -1, -1}, Pixel{ 255, 255, 255 }}, // Front top right (white)
 	};
 
+	//
+	// Main loop
+	//
+
 	// Input loop and rendering
 	bool running = true;
 	size_t frame = 0;
 
 	KeyState keys;
 	int last_mouse_x = -1, last_mouse_y = -1;
+	bool resized = false;
 	while (running) {
 		keys.clear(); // Clear previous key states
 
@@ -606,17 +627,6 @@ int main() {
 		// ? Note: Key releases are not possible to detect with notcurses but pressing multiple keys within a frame is possible
 		struct ncinput input;
 		while (notcurses_get_nblock(nc, &input) > 0) {
-			// Handle terminal resize
-			if (input.id == NCKEY_RESIZE) {
-				ncplane_dim_yx(stdplane, &rows, &cols);
-				display = Display3D{ cols / 2, rows, stdplane };
-
-				// Reset mouse position tracking
-				last_mouse_x = -1;
-				last_mouse_y = -1;
-				continue;
-			}
-
 			keys.set(input.id); // Set key as pressed
 
 			// Mouse look
@@ -633,6 +643,21 @@ int main() {
 				last_mouse_x = input.x;
 				last_mouse_y = input.y;
 			}
+		}
+
+		// Handle terminal resize
+		u_int cur_rows, cur_cols;
+		ncplane_dim_yx(stdplane, &cur_rows, &cur_cols);
+		if (cur_rows != rows || cur_cols != cols) {
+			rows = cur_rows;
+			cols = cur_cols;
+
+			display.resize(cols / 2, rows);
+			ncplane_erase(stdplane);
+
+			// Reset mouse position tracking after a resize
+			last_mouse_x = -1;
+			last_mouse_y = -1;
 		}
 
 		// Apply input to camera movement
@@ -674,8 +699,9 @@ int main() {
 		// camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
 
 		display.clear();
-		render_scene(display, camera, objects, lights);
-		display.displayorater();
+		display.render_scene_to_image(camera, objects, lights);
+		display.draw_image_to_plane();
+		notcurses_render(nc);
 
 		// Optional small sleep to avoid max CPU usage
 		++frame;
@@ -683,6 +709,7 @@ int main() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 fps
 	}
 
+	ncplane_destroy(stdplane);
 	notcurses_stop(nc);
 	return 0;
 }
