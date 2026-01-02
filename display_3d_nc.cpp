@@ -12,7 +12,7 @@
 #include <notcurses/notcurses.h>
 
 
-using std::vector, std::hypot, std::clamp, std::sin, std::cos, std::tan, std::atan2, std::max, std::min, std::swap, std::abs, std::sqrt, std::pow, std::unique_ptr, std::make_unique;
+using std::vector, std::clamp, std::sin, std::cos, std::tan, std::atan2, std::max, std::min, std::swap, std::abs, std::sqrt, std::pow, std::unique_ptr, std::make_unique;
 
 
 constexpr float RGB_MAX_FLOAT = 255.0f;
@@ -133,7 +133,7 @@ struct Vec3 {
 		return (x * v.x) + (y * v.y) + (z * v.z);
 	}
 	float length() const {
-		return hypot(x, y, z);
+		return sqrt(x * x + y * y + z * z);
 	}
 	Vec3 norm() const {
 		const float len = length();
@@ -155,7 +155,7 @@ struct Vec3 {
 
 struct Ray {
 	Vec3 origin, direction;
-	Ray(const Vec3& o, const Vec3& d) : origin{ o }, direction{ d.norm() } {}
+	Ray(const Vec3& o, const Vec3& d_norm) : origin{ o }, direction{ d_norm } {}
 };
 
 //
@@ -210,7 +210,8 @@ struct Camera {
 		const Vec3 toFocal = focal - position;
 
 		yawDegrees = radToDeg(atan2(toFocal.x, toFocal.z));
-		pitchDegrees = radToDeg(atan2(toFocal.y, hypot(toFocal.x, toFocal.z)));
+		const float horizontalDistance = sqrt(toFocal.x * toFocal.x + toFocal.z * toFocal.z);
+		pitchDegrees = radToDeg(atan2(toFocal.y, horizontalDistance));
 		wrapAndClampAngles();
 	}
 };
@@ -329,24 +330,21 @@ struct Sphere : public Object {
 
 	// Check if a ray intersects with the sphere (dist is updated when intersection dist found)
 	bool intersects(const Ray& ray, float& dist) const override {
-		// dist is the length of the ray that hits the sphere (multiply by direction for the full ray)
-		// a*dist^2 + b*dist + c = 0
-
 		// Get the vector from the center of the sphere, to the ray's origin
 		const Vec3 centerToOrigin = ray.origin - center;
 
 		// Calculate a, b, c using the quadratic equation
-		const float a = ray.direction.dot(ray.direction);
+		// a = 1 since ray.direction is normalized
 		const float b = 2.0f * centerToOrigin.dot(ray.direction);
 		const float c = centerToOrigin.dot(centerToOrigin) - (radius * radius);
 
 		// If the discriminant is negative, the ray does not intersect the sphere
-		const float discriminant = (b * b) - (4 * a * c);
-		if (discriminant < 0) return false;
+		const float discriminant = (b * b) - (4 * c); // a = 1
+		if (discriminant < 0.0f) return false;
 
-		// The ray is not negative, so we can solve for the intersection distance
-		dist = (-b - sqrt(discriminant)) / (2.0f * a);
-		return dist > 0;
+		// The ray is not negative, so we can solve for the intersection distance (a*dist^2 + b*dist + c = 0)
+		dist = (-b - sqrt(discriminant)) * 0.5f;
+		return dist > 0.0f;
 	}
 };
 
@@ -355,7 +353,7 @@ struct Sphere : public Object {
 void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights) {
 	// Calculate aspect ratio for proper scaling
 	// Divide width by 2 since we are using 2:1 tall rectangular pixels
-	const float aspect = (width / 2.0f) / static_cast<float>(height);
+	const float aspect = (width * 0.5f) / static_cast<float>(height);
 
 	// Distance from camera to image plane
 	constexpr float camera_to_plane = 1.0f;
@@ -368,12 +366,15 @@ void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_
 	Vec3 forward, right, up;
 	camera.get_basis(forward, right, up);
 
+	const float invWidth  = 1.0f / static_cast<float>(width);
+    const float invHeight = 1.0f / static_cast<float>(height);
+
 	// Cast rays for each pixel in the image
 	for (size_t row = 0; row < height; ++row) {
 		for (size_t col = 0; col < width; ++col) {
 			// Map pixel to world coordinates on the image plane
-			const float x = -((col + 0.5f) / width - 0.5f) * plane_width; // Negate for correct orientation (flip)
-			const float y = ((row + 0.5f) / height - 0.5f) * plane_height;
+			const float x = -((col + 0.5f) * invWidth - 0.5f) * plane_width; // Negate for correct orientation (flip)
+			const float y = ((row + 0.5f) * invHeight - 0.5f) * plane_height;
 
 			// Calculate pixel position in world space
 			const Vec3 pixelPos = camera.position + (forward * camera_to_plane) + (right * x) + (up * y);
@@ -396,26 +397,25 @@ void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_
 			if (closest_object) {
 				// Calculate the hit point and normal at the intersection
 				const Vec3 hit_point = camera.position + ray.direction * closest_dist;
-
-				// View direction (from hit point to camera)
-				const Vec3 viewDir = (camera.position - hit_point).norm();
+				const Vec3 normal = closest_object->getNormalAt(hit_point);
 
 				// Accumulate the light sources onto the sphere
 				float rTotal = 0, gTotal = 0, bTotal = 0;
+				const float object_r_factor = closest_object->color.r / RGB_MAX_FLOAT;
+				const float object_g_factor = closest_object->color.g / RGB_MAX_FLOAT;
+				const float object_b_factor = closest_object->color.b / RGB_MAX_FLOAT; 
 				for (const auto& light : lights) {
-					const Vec3 normal = closest_object->getNormalAt(hit_point);
-
 					// Diffuse shading ( Lambertian reflectance)
 					const float diffuse = normal.dot(light.direction);
 					if (diffuse <= 0.0f) continue; // Only calculate if light is facing the surface
 
 					// Diffuse color
-					rTotal += closest_object->color.r * diffuse * (light.color.r / RGB_MAX_FLOAT);
-					gTotal += closest_object->color.g * diffuse * (light.color.g / RGB_MAX_FLOAT);
-					bTotal += closest_object->color.b * diffuse * (light.color.b / RGB_MAX_FLOAT);
+					rTotal += object_r_factor * diffuse * light.color.r;
+					gTotal += object_g_factor * diffuse * light.color.g;
+					bTotal += object_b_factor * diffuse * light.color.b;
 
 					// Specular shading (Blinn-Phong)
-					const Vec3 halfway = (light.direction + viewDir).norm();
+					const Vec3 halfway = (light.direction - ray.direction).norm();
 
 					const float specularAngle = max(0.0f, normal.dot(halfway));
 					const float specular = pow(specularAngle, SPECULAR_SHININESS);
@@ -621,6 +621,8 @@ int main() {
 	int last_mouse_x = -1, last_mouse_y = -1;
 	bool resized = false;
 	while (running) {
+        auto frameStart = std::chrono::high_resolution_clock::now();
+
 		keys.clear(); // Clear previous key states
 
 		// Collect all key presses and mouse movements this frame
@@ -648,14 +650,14 @@ int main() {
 		// Handle terminal resize
 		u_int cur_rows, cur_cols;
 		ncplane_dim_yx(stdplane, &cur_rows, &cur_cols);
-		if (cur_rows != rows || cur_cols != cols) {
+		if (cur_rows != rows || cur_cols != cols) { // Terminal has been resized
 			rows = cur_rows;
 			cols = cur_cols;
 
 			display.resize(cols / 2, rows);
-			ncplane_erase(stdplane);
+			ncplane_erase(stdplane); // Clear the plane to avoid artifacts
 
-			// Reset mouse position tracking after a resize
+			// Reset mouse tracking
 			last_mouse_x = -1;
 			last_mouse_y = -1;
 		}
@@ -696,12 +698,25 @@ int main() {
 			sphere->center.x -= 0.1f;
 		}
 
-		// camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
+		camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
 
 		display.clear();
 		display.render_scene_to_image(camera, objects, lights);
 		display.draw_image_to_plane();
 		notcurses_render(nc);
+
+		// Timing
+		auto frameEnd = std::chrono::high_resolution_clock::now();
+        static double avgMs = 0.0;
+        static int    avgCount = 0;
+		const double ms = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+		++avgCount;
+		avgMs = (avgMs * (avgCount - 1) + ms) / avgCount;
+
+		if (frame % 30 == 0) { // print every 30 frames
+			std::cerr << "avg frame time: " << avgMs << " ms  (" << 1000.0 / avgMs << " FPS)\n";
+		}
+		// Timing
 
 		// Optional small sleep to avoid max CPU usage
 		++frame;
