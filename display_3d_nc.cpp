@@ -12,7 +12,7 @@
 #include <notcurses/notcurses.h>
 
 
-using std::vector, std::clamp, std::sin, std::cos, std::tan, std::atan2, std::max, std::min, std::swap, std::abs, std::sqrt, std::pow, std::unique_ptr, std::make_unique;
+using std::vector, std::sin, std::cos, std::tan, std::atan2, std::clamp, std::min, std::max, std::swap, std::abs, std::sqrt, std::pow, std::fmod, std::floor, std::unique_ptr, std::make_unique;
 
 
 constexpr float RGB_MAX_FLOAT = 255.0f;
@@ -101,6 +101,7 @@ struct Display3D {
 		}
 	}
 
+	// Implemented later
 	void render_scene_to_image(const Camera& camera, const vector<unique_ptr<Object>>& objects, const vector<Light>& lights);
 };
 
@@ -227,8 +228,13 @@ struct Object {
 	virtual ~Object() = default; // Prevent children from not being destroyed properly
 	Object(const Vec3& c, const Pixel& p) : center{ c }, color{ p } {}
 
-	virtual const Vec3 getNormalAt(const Vec3& hit_point) const = 0;
+	virtual Vec3 getNormalAt(const Vec3& hitPoint) const = 0;
 	virtual bool intersects(const Ray& ray, float& dist) const = 0;
+
+	// Default color getter (override for textured objects)
+	virtual const Pixel& getColorAt(const Vec3&) const {
+		return color;
+	}
 };
 
 struct Plane : public Object {
@@ -237,7 +243,7 @@ struct Plane : public Object {
 
 	Plane(const Vec3& c, const Vec3& n, const Pixel& p) : Object{ c, p }, normal{ n.norm() } {}
 
-	const Vec3 getNormalAt(const Vec3&) const override {
+	Vec3 getNormalAt(const Vec3&) const override {
 		return normal;
 	}
 
@@ -247,6 +253,40 @@ struct Plane : public Object {
 		if (abs(denominator) < 1e-6) return false; // Parallel, no intersection
 		dist = (center - ray.origin).dot(normal) / denominator;
 		return dist > 0;
+	}
+};
+
+struct CheckerboardPlane : public Plane {
+	float cellSize;
+
+	Pixel lightColor;
+	Pixel darkColor;
+
+	// Plane basis vectors
+	Vec3 uAxis;
+	Vec3 vAxis;
+
+	CheckerboardPlane(const Vec3& c, const Vec3& n, const float cs, const Pixel& lightC, const Pixel& darkC)
+		: Plane{ c, n, lightC }, cellSize{ cs }, lightColor{ lightC }, darkColor{ darkC } {
+
+		// Generate basis vectors for the plane
+		const Vec3 arbitrary = (abs(normal.x) < 0.999f) ? Vec3{ 0, 1, 0 } : Vec3{ 1, 0, 0 };
+		uAxis = normal.cross(arbitrary).norm();
+		vAxis = normal.cross(uAxis).norm();
+	}
+
+	const Pixel& getColorAt(const Vec3& hitPoint) const override {
+		// Project hit point onto plane basis vectors to get local coordinates
+		const Vec3 toPoint = hitPoint - center;
+		const float u = toPoint.dot(uAxis);
+		const float v = toPoint.dot(vAxis);
+
+		// Determine which cell we are in
+		const int cellU = static_cast<int>(floor(u / cellSize));
+		const int cellV = static_cast<int>(floor(v / cellSize));
+		const bool isDarkCell = ((cellU + cellV) & 1) != 0;
+
+		return isDarkCell ? darkColor : lightColor;
 	}
 };
 
@@ -270,17 +310,17 @@ struct Box : public Object {
 		hw /= 2.0f;
 	}
 
-	const Vec3 getNormalAt(const Vec3& hit_point) const override {
-		const Vec3 direction = hit_point - center;
+	Vec3 getNormalAt(const Vec3& hitPoint) const override {
+		const Vec3 direction = hitPoint - center;
 
 		// Projections onto each axis
 		const float pU = direction.dot(u);
 		const float pV = direction.dot(v);
 		const float pW = direction.dot(w);
 
-		const float a = abs(pU / hu);
-		const float b = abs(pV / hv);
-		const float c = abs(pW / hw);
+		// const float a = abs(pU / hu);
+		// const float b = abs(pV / hv);
+		// const float c = abs(pW / hw);
 
 		return Vec3{ pU / hu, pV / hv, pW / hw }.norm(); // Uniform gradient
 		// return Vec3{ pU * hu, pV * hv, pW * hw }.norm(); // Exagerated gradient
@@ -324,8 +364,8 @@ struct Sphere : public Object {
 
 	Sphere(const Vec3 c, const float r, const Pixel p) : Object{ c, p }, radius{ r } {}
 
-	const Vec3 getNormalAt(const Vec3& hit_point) const override {
-		return (hit_point - center).norm();
+	Vec3 getNormalAt(const Vec3& hitPoint) const override {
+		return (hitPoint - center).norm();
 	}
 
 	// Check if a ray intersects with the sphere (dist is updated when intersection dist found)
@@ -366,8 +406,8 @@ void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_
 	Vec3 forward, right, up;
 	camera.get_basis(forward, right, up);
 
-	const float invWidth  = 1.0f / static_cast<float>(width);
-    const float invHeight = 1.0f / static_cast<float>(height);
+	const float invWidth = 1.0f / static_cast<float>(width);
+	const float invHeight = 1.0f / static_cast<float>(height);
 
 	// Cast rays for each pixel in the image
 	for (size_t row = 0; row < height; ++row) {
@@ -396,14 +436,16 @@ void Display3D::render_scene_to_image(const Camera& camera, const vector<unique_
 			// Closest object
 			if (closest_object) {
 				// Calculate the hit point and normal at the intersection
-				const Vec3 hit_point = camera.position + ray.direction * closest_dist;
-				const Vec3 normal = closest_object->getNormalAt(hit_point);
+				const Vec3 hitPoint = camera.position + ray.direction * closest_dist;
+				const Vec3 normal = closest_object->getNormalAt(hitPoint);
+
+				const Pixel& surfaceColor = closest_object->getColorAt(hitPoint);
 
 				// Accumulate the light sources onto the sphere
 				float rTotal = 0, gTotal = 0, bTotal = 0;
-				const float object_r_factor = closest_object->color.r / RGB_MAX_FLOAT;
-				const float object_g_factor = closest_object->color.g / RGB_MAX_FLOAT;
-				const float object_b_factor = closest_object->color.b / RGB_MAX_FLOAT; 
+				const float object_r_factor = surfaceColor.r / RGB_MAX_FLOAT;
+				const float object_g_factor = surfaceColor.g / RGB_MAX_FLOAT;
+				const float object_b_factor = surfaceColor.b / RGB_MAX_FLOAT;
 				for (const auto& light : lights) {
 					// Diffuse shading ( Lambertian reflectance)
 					const float diffuse = normal.dot(light.direction);
@@ -594,6 +636,7 @@ int main() {
 	vector<unique_ptr<Object>> objects;
 
 	objects.emplace_back(make_unique<Plane>(Vec3{ 0, 25, 0 }, Vec3{ 0, 1, 0 }, Pixel{ 230, 230, 230 })); // Light gray ground plane
+	objects.emplace_back(make_unique<CheckerboardPlane>(Vec3{ 100, -25, 0 }, Vec3{ 0, -1, 0.5 }, 10.0f, Pixel{ 200, 200, 200 }, Pixel{ 50, 50, 50 })); // Checkerboard tilted plane
 
 	objects.emplace_back(make_unique<Sphere>(Vec3{ 0, 0, 0 }, 25, Pixel{ 255, 255, 255 })); // White sphere
 	objects.emplace_back(make_unique<Sphere>(Vec3{ 30, 20, -15 }, 10, Pixel{ 255, 255, 140 })); // Light yellow sphere front, up, right of the first
@@ -621,7 +664,9 @@ int main() {
 	int last_mouse_x = -1, last_mouse_y = -1;
 	bool resized = false;
 	while (running) {
-        auto frameStart = std::chrono::high_resolution_clock::now();
+		// // ? Timing
+		// auto frameStart = std::chrono::high_resolution_clock::now();
+		// // ? Timing
 
 		keys.clear(); // Clear previous key states
 
@@ -698,30 +743,32 @@ int main() {
 			sphere->center.x -= 0.1f;
 		}
 
-		camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
+		// camera.orbit(frame, Vec3{ 0, 0, 0 }, 60.0f, Vec3{ 1, 1, -1 }, 2.0f);
 
 		display.clear();
 		display.render_scene_to_image(camera, objects, lights);
 		display.draw_image_to_plane();
 		notcurses_render(nc);
 
-		// Timing
-		auto frameEnd = std::chrono::high_resolution_clock::now();
-        static double avgMs = 0.0;
-        static int    avgCount = 0;
-		const double ms = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
-		++avgCount;
-		avgMs = (avgMs * (avgCount - 1) + ms) / avgCount;
+		// // ? Timing
+		// auto frameEnd = std::chrono::high_resolution_clock::now();
+		// static double avgMs = 0.0;
+		// static int    avgCount = 0;
+		// const double ms = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+		// ++avgCount;
+		// avgMs = (avgMs * (avgCount - 1) + ms) / avgCount;
 
-		if (frame % 30 == 0) { // print every 30 frames
-			std::cerr << "avg frame time: " << avgMs << " ms  (" << 1000.0 / avgMs << " FPS)\n";
-		}
-		// Timing
+		// if (frame % 60 == 0) { // print every 60 frames
+		// 	std::cerr << "avg frame time: " << avgMs << " ms  (" << 1000.0 / avgMs << " FPS)\n";
+		// }
+		// if (frame > 180) break;
+		// // ? Timing
 
 		// Optional small sleep to avoid max CPU usage
 		++frame;
 		//std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 100 fps
 		std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 fps
+
 	}
 
 	ncplane_destroy(stdplane);

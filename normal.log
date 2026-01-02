@@ -1,12 +1,12 @@
-avg frame time: 43.2334 ms  (23.1303 FPS)
-avg frame time: 45.2901 ms  (22.0799 FPS)
-avg frame time: 49.6787 ms  (20.1294 FPS)
-avg frame time: 51.3478 ms  (19.475 FPS)
-avg frame time: 53.4007 ms  (18.7264 FPS)
-avg frame time: 49.7455 ms  (20.1023 FPS)
-avg frame time: 47.3675 ms  (21.1115 FPS)
-avg frame time: 45.7703 ms  (21.8482 FPS)
-avg frame time: 44.7484 ms  (22.3472 FPS)
-avg frame time: 43.9168 ms  (22.7703 FPS)
-avg frame time: 44.4722 ms  (22.486 FPS)
-avg frame time: 45.9925 ms  (21.7427 FPS)
+avg frame time: 20.2019 ms  (49.5003 FPS)
+avg frame time: 22.5594 ms  (44.3274 FPS)
+avg frame time: 22.6118 ms  (44.2247 FPS)
+avg frame time: 22.8173 ms  (43.8263 FPS)
+181 renders, 351.24ms (1.71ms min, 1.94ms avg, 4.80ms max)
+181 rasters, 103.48ms (339.27µs min, 571.72µs avg, 1.61ms max)
+181 writes, 764.57ms (1.17ms min, 4.22ms avg, 17.53ms max)
+40.16MiB (78.47KiB min, 227.20KiB avg, 553.99KiB max) 0 inputs Ghpa: 0
+0 failed renders, 0 failed rasters, 0 refreshes, 0 input errors
+RGB emits:elides: def 1:3658322 fg 0:0 bg 2092987:1565336
+Cell emits:elides: 3658323:32114155 (89.77%) 100.00% 0.00% 42.79%
+Bmap emits:elides: 0:0 (0.00%) 0B (0.00%) SuM: 0 (0.00%)
