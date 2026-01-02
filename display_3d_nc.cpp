@@ -54,7 +54,6 @@ struct Display3D {
 
 	void clear() {
 		fill(flattenedPixels.begin(), flattenedPixels.end(), Pixel{ 0, 0, 0 });
-		ncplane_erase(plane); // Clear the notcurses plane
 	}
 
 	size_t getNumRows() const {
@@ -572,8 +571,6 @@ int main() {
 	ncplane_dim_yx(stdplane, &rows, &cols);
 	Display3D display{ cols / 2, rows, stdplane };
 
-	// Display3D display{ 80, 45, stdplane };
-
 	// Camera position (want to have it behind the image plane)
 	Camera camera{ Vec3{ 0, 0, -60 }, 0.0f, 0.0f }; // Straight camera
 
@@ -609,13 +606,24 @@ int main() {
 		// ? Note: Key releases are not possible to detect with notcurses but pressing multiple keys within a frame is possible
 		struct ncinput input;
 		while (notcurses_get_nblock(nc, &input) > 0) {
+			// Handle terminal resize
+			if (input.id == NCKEY_RESIZE) {
+				ncplane_dim_yx(stdplane, &rows, &cols);
+				display = Display3D{ cols / 2, rows, stdplane };
+
+				// Reset mouse position tracking
+				last_mouse_x = -1;
+				last_mouse_y = -1;
+				continue;
+			}
+
 			keys.set(input.id); // Set key as pressed
 
 			// Mouse look
 			if (nckey_mouse_p(input.id) && (input.x != last_mouse_x || input.y != last_mouse_y)) {
 				if (last_mouse_x != -1 && last_mouse_y != -1) {
-					int dx = input.x - last_mouse_x;
-					int dy = input.y - last_mouse_y;
+					const int dx = input.x - last_mouse_x;
+					const int dy = input.y - last_mouse_y;
 
 					camera.yawDegrees += dx * MOUSE_SENSITIVITY;
 					camera.pitchDegrees += dy * MOUSE_SENSITIVITY;
